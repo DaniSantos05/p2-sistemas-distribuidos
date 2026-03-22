@@ -14,26 +14,26 @@
 
 // Tamaño máximo de key y value1.
 // Son 255 caracteres útiles + '\0'.
-#define MAX_TEXT 256
+#define MAX_TEXTO 256
 
 // Tamaño máximo del vector de floats.
 #define MAX_VALUE2 32
 
 // Tamaño de la cabecera de petición.
 // 1 byte de operación + 4 bytes de tamaño del cuerpo.
-#define PET_HDR 5
+#define TAM_CABECERA_PETICION 5
 
 // Tamaño de la cabecera de respuesta.
 // 1 byte de operación + 4 bytes de estado + 4 bytes de tamaño del cuerpo.
-#define RES_HDR 9
+#define TAM_CABECERA_RESPUESTA 9
 
-// Límite máximo de cuerpo.
+// Límite máximo del cuerpo.
 // Sirve para evitar reservar memoria absurda si llega una petición rota.
-#define MAX_BODY 4096
+#define MAX_CUERPO 4096
 
 // Códigos de operación.
 // Tienen que coincidir con los del proxy.
-enum operation_code {
+enum codigo_operacion {
     OP_DESTROY = 1,      // destroy
     OP_SET_VALUE = 2,    // set_value
     OP_GET_VALUE = 3,    // get_value
@@ -45,57 +45,60 @@ enum operation_code {
 // Aquí guardamos una petición ya leída y ya entendida.
 // Esta estructura es interna del servidor.
 // No se manda por red.
-struct request_data {
-    uint8_t op;                    // Operación pedida
-    char key[MAX_TEXT];            // Clave
-    char value1[MAX_TEXT];         // value1
-    int n_value2;                  // Número real de floats
-    float v_value2[MAX_VALUE2];    // Vector de floats
-    struct Paquete value3;         // Estructura con x, y, z
+struct datos_peticion {
+    uint8_t operacion;               // Operación pedida
+    char clave[MAX_TEXTO];           // Clave
+    char valor1[MAX_TEXTO];          // value1
+    int n_value2;                    // Número real de floats
+    float vector_value2[MAX_VALUE2]; // Vector de floats
+    struct Paquete valor3;           // Estructura con x, y, z
 };
 
 // Aquí guardamos el resultado de ejecutar una operación.
 // Para get_value también guarda los datos que luego habrá que mandar.
-struct response_data {
-    int status;                    // Valor devuelto por la operación
-    char value1[MAX_TEXT];         // value1 devuelto
-    int n_value2;                  // N_value2 devuelto
-    float v_value2[MAX_VALUE2];    // Vector devuelto
-    struct Paquete value3;         // value3 devuelto
+struct datos_respuesta {
+    int estado;                      // Valor devuelto por la operación
+    char valor1[MAX_TEXTO];          // value1 devuelto
+    int n_value2;                    // N_value2 devuelto
+    float vector_value2[MAX_VALUE2]; // Vector devuelto
+    struct Paquete valor3;           // value3 devuelto
 };
 
 // Esta bandera vale 1 mientras el servidor debe seguir activo.
-static volatile sig_atomic_t keep_running = 1;
+static volatile sig_atomic_t seguir_funcionando = 1;
 
 // Aquí guardamos el socket del servidor para poder cerrarlo al recibir Ctrl+C.
-static int server_fd = -1;
+static int descriptor_servidor = -1;
 
 // Esta función se ejecuta cuando llega una señal para parar el servidor.
-static void stop_server(int sig) {
-    (void)sig;                     // No usamos el parámetro, solo evitamos warning
-    keep_running = 0;              // Marcamos que el servidor debe terminar
+static void detener_servidor(int senal) {
+    (void)senal;                     // No usamos el parámetro, solo evitamos warning
+    seguir_funcionando = 0;          // Marcamos que el servidor debe terminar
 
     // Si el socket del servidor sigue abierto, lo cerramos.
     // Así accept() deja de bloquearse y el programa puede salir.
-    if (server_fd != -1) {
-        close(server_fd);
-        server_fd = -1;
+    if (descriptor_servidor != -1) {
+        close(descriptor_servidor);
+        descriptor_servidor = -1;
     }
 }
 
 // Esta función envía exactamente n bytes.
 // send() puede enviar menos bytes de golpe, así que repetimos hasta terminar.
-static int send_all(int fd, const void *buf, size_t n) {
-    const unsigned char *p = buf;  // Puntero a los bytes que queremos mandar
-    size_t sent = 0;               // Número de bytes ya enviados
+static int enviar_todo(int descriptor, const void *buffer, size_t cantidad_bytes) {
+    const unsigned char *puntero = buffer; // Puntero a los bytes que queremos mandar
+    size_t bytes_enviados = 0;             // Número de bytes ya enviados
 
     // Seguimos mientras queden bytes por enviar.
-    while (sent < n) {
+    while (bytes_enviados < cantidad_bytes) {
         // Intentamos enviar los bytes que faltan.
-        ssize_t r = send(fd, p + sent, n - sent, 0);
+        ssize_t resultado = send(descriptor,
+                                 puntero + bytes_enviados,
+                                 cantidad_bytes - bytes_enviados,
+                                 0);
 
         // Si send falla...
-        if (r < 0) {
+        if (resultado < 0) {
             // ...y fue por interrupción de señal, reintentamos.
             if (errno == EINTR) {
                 continue;
@@ -106,12 +109,12 @@ static int send_all(int fd, const void *buf, size_t n) {
         }
 
         // Si devuelve 0, tratamos la conexión como fallida.
-        if (r == 0) {
+        if (resultado == 0) {
             return -1;
         }
 
         // Sumamos los bytes enviados en esta vuelta.
-        sent += (size_t)r;
+        bytes_enviados += (size_t)resultado;
     }
 
     // Todo salió bien.
@@ -120,17 +123,20 @@ static int send_all(int fd, const void *buf, size_t n) {
 
 // Esta función recibe exactamente n bytes.
 // recv() también puede devolver menos bytes de los pedidos.
-static int recv_all(int fd, void *buf, size_t n) {
-    unsigned char *p = buf;        // Puntero al buffer donde guardamos lo recibido
-    size_t recvd = 0;              // Número de bytes ya recibidos
+static int recibir_todo(int descriptor, void *buffer, size_t cantidad_bytes) {
+    unsigned char *puntero = buffer; // Puntero al buffer donde guardamos lo recibido
+    size_t bytes_recibidos = 0;      // Número de bytes ya recibidos
 
     // Seguimos mientras queden bytes por recibir.
-    while (recvd < n) {
+    while (bytes_recibidos < cantidad_bytes) {
         // Intentamos recibir lo que falta.
-        ssize_t r = recv(fd, p + recvd, n - recvd, 0);
+        ssize_t resultado = recv(descriptor,
+                                 puntero + bytes_recibidos,
+                                 cantidad_bytes - bytes_recibidos,
+                                 0);
 
         // Si recv falla...
-        if (r < 0) {
+        if (resultado < 0) {
             // ...y fue por interrupción de señal, reintentamos.
             if (errno == EINTR) {
                 continue;
@@ -141,12 +147,12 @@ static int recv_all(int fd, void *buf, size_t n) {
         }
 
         // Si devuelve 0, el cliente cerró la conexión antes de tiempo.
-        if (r == 0) {
+        if (resultado == 0) {
             return -1;
         }
 
         // Sumamos los bytes recibidos.
-        recvd += (size_t)r;
+        bytes_recibidos += (size_t)resultado;
     }
 
     // Todo salió bien.
@@ -155,119 +161,122 @@ static int recv_all(int fd, void *buf, size_t n) {
 
 // Esta función escribe un entero de 32 bits en el buffer.
 // Primero lo pasa a orden de red.
-static void write_i32(unsigned char *buf, size_t *pos, int32_t v) {
-    uint32_t net = htonl((uint32_t)v);     // Convertimos a orden de red
+static void escribir_entero_32(unsigned char *buffer, size_t *posicion, int32_t valor) {
+    uint32_t valor_red = htonl((uint32_t)valor); // Convertimos a orden de red
 
     // Copiamos el entero al buffer en la posición actual.
-    memcpy(buf + *pos, &net, sizeof(net));
+    memcpy(buffer + *posicion, &valor_red, sizeof(valor_red));
 
     // Avanzamos 4 bytes.
-    *pos += sizeof(net);
+    *posicion += sizeof(valor_red);
 }
 
 // Esta función lee un entero de 32 bits desde el buffer.
 // Después lo convierte de orden de red a orden local.
-static int32_t read_i32(const unsigned char *buf, size_t *pos) {
-    uint32_t net = 0;                      // Variable temporal
+static int32_t leer_entero_32(const unsigned char *buffer, size_t *posicion) {
+    uint32_t valor_red = 0; // Variable temporal
 
     // Leemos 4 bytes desde el buffer.
-    memcpy(&net, buf + *pos, sizeof(net));
+    memcpy(&valor_red, buffer + *posicion, sizeof(valor_red));
 
     // Avanzamos 4 bytes.
-    *pos += sizeof(net);
+    *posicion += sizeof(valor_red);
 
     // Convertimos a orden local y devolvemos el valor.
-    return (int32_t)ntohl(net);
+    return (int32_t)ntohl(valor_red);
 }
 
 // Esta función escribe un float en el buffer.
 // Lo hacemos usando sus 4 bytes como si fuera un entero de 32 bits.
-static void write_f32(unsigned char *buf, size_t *pos, float v) {
-    uint32_t bits = 0;                     // Aquí guardamos temporalmente los 4 bytes del float
+static void escribir_float_32(unsigned char *buffer, size_t *posicion, float valor) {
+    uint32_t bits = 0; // Aquí guardamos temporalmente los 4 bytes del float
 
     // Copiamos los 4 bytes del float al entero temporal.
-    memcpy(&bits, &v, sizeof(bits));
+    memcpy(&bits, &valor, sizeof(bits));
 
     // Convertimos esos 4 bytes a orden de red.
     bits = htonl(bits);
 
     // Guardamos esos 4 bytes en el buffer.
-    memcpy(buf + *pos, &bits, sizeof(bits));
+    memcpy(buffer + *posicion, &bits, sizeof(bits));
 
     // Avanzamos 4 bytes.
-    *pos += sizeof(bits);
+    *posicion += sizeof(bits);
 }
 
 // Esta función lee un float desde el buffer.
-// Hace el proceso contrario al de write_f32.
-static float read_f32(const unsigned char *buf, size_t *pos) {
-    uint32_t bits = 0;                     // Aquí leemos primero los 4 bytes
-    float v = 0.0f;                        // Aquí reconstruimos el float final
+// Hace el proceso contrario al de escribir_float_32.
+static float leer_float_32(const unsigned char *buffer, size_t *posicion) {
+    uint32_t bits = 0; // Aquí leemos primero los 4 bytes
+    float valor = 0.0f; // Aquí reconstruimos el float final
 
     // Leemos 4 bytes desde el buffer.
-    memcpy(&bits, buf + *pos, sizeof(bits));
+    memcpy(&bits, buffer + *posicion, sizeof(bits));
 
     // Avanzamos 4 bytes.
-    *pos += sizeof(bits);
+    *posicion += sizeof(bits);
 
     // Pasamos esos 4 bytes de orden de red a orden local.
     bits = ntohl(bits);
 
     // Copiamos esos 4 bytes dentro del float.
-    memcpy(&v, &bits, sizeof(v));
+    memcpy(&valor, &bits, sizeof(valor));
 
     // Devolvemos el float reconstruido.
-    return v;
+    return valor;
 }
 
 // Esta función comprueba si aún quedan suficientes bytes en el buffer.
 // Sirve para no leer fuera de la memoria.
-static int has_bytes(size_t pos, size_t need, size_t total) {
-    return pos <= total && need <= (total - pos);
+static int quedan_bytes(size_t posicion, size_t necesarios, size_t total) {
+    return posicion <= total && necesarios <= (total - posicion);
 }
 
 // Esta función lee una cadena del buffer.
 // El formato es:
 // - 4 bytes con la longitud
 // - luego los bytes de la cadena
-static int read_string(const unsigned char *buf, size_t total, size_t *pos, char dst[MAX_TEXT]) {
-    int32_t len32;                // Longitud leída como entero con signo
-    size_t len;                   // Longitud convertida a size_t
+static int leer_cadena(const unsigned char *buffer,
+                       size_t total,
+                       size_t *posicion,
+                       char destino[MAX_TEXTO]) {
+    int32_t longitud_32; // Longitud leída como entero con signo
+    size_t longitud;     // Longitud convertida a size_t
 
     // Deben quedar al menos 4 bytes para leer la longitud.
-    if (!has_bytes(*pos, sizeof(uint32_t), total)) {
+    if (!quedan_bytes(*posicion, sizeof(uint32_t), total)) {
         return -1;
     }
 
     // Leemos la longitud.
-    len32 = read_i32(buf, pos);
+    longitud_32 = leer_entero_32(buffer, posicion);
 
     // Si es negativa, el mensaje es incorrecto.
-    if (len32 < 0) {
+    if (longitud_32 < 0) {
         return -1;
     }
 
     // Convertimos la longitud.
-    len = (size_t)len32;
+    longitud = (size_t)longitud_32;
 
     // La cadena no puede medir 256 o más, porque no cabría con el '\0'.
-    if (len >= MAX_TEXT) {
+    if (longitud >= MAX_TEXTO) {
         return -1;
     }
 
     // Comprobamos que queden realmente esos bytes en el buffer.
-    if (!has_bytes(*pos, len, total)) {
+    if (!quedan_bytes(*posicion, longitud, total)) {
         return -1;
     }
 
     // Copiamos la cadena.
-    memcpy(dst, buf + *pos, len);
+    memcpy(destino, buffer + *posicion, longitud);
 
     // Añadimos el terminador nulo.
-    dst[len] = '\0';
+    destino[longitud] = '\0';
 
     // Avanzamos el desplazamiento.
-    *pos += len;
+    *posicion += longitud;
 
     // Todo salió bien.
     return 0;
@@ -279,65 +288,69 @@ static int read_string(const unsigned char *buf, size_t total, size_t *pos, char
 // - N_value2
 // - los floats
 // - x, y, z
-static int build_get_body(unsigned char **body, uint32_t *body_len, const struct response_data *res) {
-    size_t len1 = strlen(res->value1);     // Longitud real de value1
-    size_t total;                          // Tamaño total del cuerpo
-    unsigned char *buf;                    // Buffer donde construiremos el cuerpo
-    size_t pos = 0;                        // Posición actual dentro del buffer
-    int i;                                 // Variable para recorrer los floats
+static int construir_cuerpo_get_value(unsigned char **cuerpo,
+                                      uint32_t *longitud_cuerpo,
+                                      const struct datos_respuesta *respuesta) {
+    size_t longitud_valor1 = strlen(respuesta->valor1); // Longitud real de value1
+    size_t total;                                       // Tamaño total del cuerpo
+    unsigned char *buffer;                              // Buffer donde construiremos el cuerpo
+    size_t posicion = 0;                                // Posición actual dentro del buffer
+    int i;                                              // Variable para recorrer los floats
 
     // Validamos value1 y n_value2.
-    if (len1 >= MAX_TEXT || res->n_value2 < 1 || res->n_value2 > MAX_VALUE2) {
+    if (longitud_valor1 >= MAX_TEXTO ||
+        respuesta->n_value2 < 1 ||
+        respuesta->n_value2 > MAX_VALUE2) {
         return -1;
     }
 
     // Calculamos el tamaño total del cuerpo.
     total =
-        sizeof(uint32_t) +                 // Longitud de value1
-        len1 +                             // Bytes de value1
-        sizeof(uint32_t) +                 // N_value2
-        (size_t)res->n_value2 * sizeof(uint32_t) + // Floats
-        3 * sizeof(uint32_t);              // x, y, z
+        sizeof(uint32_t) +                                  // Longitud de value1
+        longitud_valor1 +                                   // Bytes de value1
+        sizeof(uint32_t) +                                  // N_value2
+        (size_t)respuesta->n_value2 * sizeof(uint32_t) +    // Floats
+        3 * sizeof(uint32_t);                               // x, y, z
 
     // Reservamos memoria.
-    buf = malloc(total);
+    buffer = malloc(total);
 
     // Si falla malloc, devolvemos error.
-    if (buf == NULL) {
+    if (buffer == NULL) {
         return -1;
     }
 
     // Guardamos la longitud de value1.
-    write_i32(buf, &pos, (int32_t)len1);
+    escribir_entero_32(buffer, &posicion, (int32_t)longitud_valor1);
 
     // Guardamos los bytes de value1.
-    memcpy(buf + pos, res->value1, len1);
+    memcpy(buffer + posicion, respuesta->valor1, longitud_valor1);
 
     // Avanzamos el desplazamiento.
-    pos += len1;
+    posicion += longitud_valor1;
 
     // Guardamos N_value2.
-    write_i32(buf, &pos, res->n_value2);
+    escribir_entero_32(buffer, &posicion, respuesta->n_value2);
 
     // Guardamos todos los floats.
-    for (i = 0; i < res->n_value2; i++) {
-        write_f32(buf, &pos, res->v_value2[i]);
+    for (i = 0; i < respuesta->n_value2; i++) {
+        escribir_float_32(buffer, &posicion, respuesta->vector_value2[i]);
     }
 
     // Guardamos x.
-    write_i32(buf, &pos, res->value3.x);
+    escribir_entero_32(buffer, &posicion, respuesta->valor3.x);
 
     // Guardamos y.
-    write_i32(buf, &pos, res->value3.y);
+    escribir_entero_32(buffer, &posicion, respuesta->valor3.y);
 
     // Guardamos z.
-    write_i32(buf, &pos, res->value3.z);
+    escribir_entero_32(buffer, &posicion, respuesta->valor3.z);
 
     // Devolvemos el buffer construido.
-    *body = buf;
+    *cuerpo = buffer;
 
     // Devolvemos su tamaño real.
-    *body_len = (uint32_t)pos;
+    *longitud_cuerpo = (uint32_t)posicion;
 
     // Todo salió bien.
     return 0;
@@ -345,81 +358,84 @@ static int build_get_body(unsigned char **body, uint32_t *body_len, const struct
 
 // Esta función convierte el cuerpo recibido en una petición interna.
 // Según la operación, el cuerpo tiene un formato distinto.
-static int parse_request(uint8_t op, const unsigned char *body, uint32_t body_len, struct request_data *req) {
-    size_t pos = 0;                // Posición actual dentro del cuerpo
-    int i;                         // Variable para recorrer floats
+static int interpretar_peticion(uint8_t operacion,
+                                const unsigned char *cuerpo,
+                                uint32_t longitud_cuerpo,
+                                struct datos_peticion *peticion) {
+    size_t posicion = 0; // Posición actual dentro del cuerpo
+    int i;               // Variable para recorrer floats
 
     // Dejamos la estructura limpia.
-    memset(req, 0, sizeof(*req));
+    memset(peticion, 0, sizeof(*peticion));
 
     // Guardamos la operación.
-    req->op = op;
+    peticion->operacion = operacion;
 
     // Elegimos cómo interpretar el cuerpo según la operación.
-    switch (op) {
+    switch (operacion) {
         case OP_DESTROY:
             // destroy no debe llevar cuerpo.
-            return body_len == 0 ? 0 : -1;
+            return longitud_cuerpo == 0 ? 0 : -1;
 
         case OP_DELETE_KEY:
         case OP_EXIST:
         case OP_GET_VALUE:
             // Estas tres operaciones solo necesitan la key.
-            if (read_string(body, body_len, &pos, req->key) == -1) {
+            if (leer_cadena(cuerpo, longitud_cuerpo, &posicion, peticion->clave) == -1) {
                 return -1;
             }
 
             // No deben sobrar bytes.
-            return pos == body_len ? 0 : -1;
+            return posicion == longitud_cuerpo ? 0 : -1;
 
         case OP_SET_VALUE:
         case OP_MODIFY_VALUE:
             // Leemos key.
-            if (read_string(body, body_len, &pos, req->key) == -1) {
+            if (leer_cadena(cuerpo, longitud_cuerpo, &posicion, peticion->clave) == -1) {
                 return -1;
             }
 
             // Leemos value1.
-            if (read_string(body, body_len, &pos, req->value1) == -1) {
+            if (leer_cadena(cuerpo, longitud_cuerpo, &posicion, peticion->valor1) == -1) {
                 return -1;
             }
 
             // Deben quedar al menos 4 bytes para N_value2.
-            if (!has_bytes(pos, sizeof(uint32_t), body_len)) {
+            if (!quedan_bytes(posicion, sizeof(uint32_t), longitud_cuerpo)) {
                 return -1;
             }
 
             // Leemos N_value2.
-            req->n_value2 = read_i32(body, &pos);
+            peticion->n_value2 = leer_entero_32(cuerpo, &posicion);
 
             // Validamos el rango.
-            if (req->n_value2 < 1 || req->n_value2 > MAX_VALUE2) {
+            if (peticion->n_value2 < 1 || peticion->n_value2 > MAX_VALUE2) {
                 return -1;
             }
 
             // Deben quedar bytes para los floats y para x, y, z.
-            if (!has_bytes(pos,
-                           (size_t)req->n_value2 * sizeof(uint32_t) + 3 * sizeof(uint32_t),
-                           body_len)) {
+            if (!quedan_bytes(posicion,
+                              (size_t)peticion->n_value2 * sizeof(uint32_t) + 3 * sizeof(uint32_t),
+                              longitud_cuerpo)) {
                 return -1;
             }
 
             // Leemos todos los floats.
-            for (i = 0; i < req->n_value2; i++) {
-                req->v_value2[i] = read_f32(body, &pos);
+            for (i = 0; i < peticion->n_value2; i++) {
+                peticion->vector_value2[i] = leer_float_32(cuerpo, &posicion);
             }
 
             // Leemos x.
-            req->value3.x = read_i32(body, &pos);
+            peticion->valor3.x = leer_entero_32(cuerpo, &posicion);
 
             // Leemos y.
-            req->value3.y = read_i32(body, &pos);
+            peticion->valor3.y = leer_entero_32(cuerpo, &posicion);
 
             // Leemos z.
-            req->value3.z = read_i32(body, &pos);
+            peticion->valor3.z = leer_entero_32(cuerpo, &posicion);
 
             // No deben sobrar bytes.
-            return pos == body_len ? 0 : -1;
+            return posicion == longitud_cuerpo ? 0 : -1;
 
         default:
             // Si la operación no existe, devolvemos error.
@@ -429,64 +445,81 @@ static int parse_request(uint8_t op, const unsigned char *body, uint32_t body_le
 
 // Esta función llama a las funciones reales del servicio.
 // Aquí conectamos la parte de red con claves.c.
-static void run_request(const struct request_data *req, struct response_data *res) {
+static void ejecutar_peticion(const struct datos_peticion *peticion,
+                              struct datos_respuesta *respuesta) {
     // Dejamos la estructura de respuesta limpia.
-    memset(res, 0, sizeof(*res));
+    memset(respuesta, 0, sizeof(*respuesta));
 
     // Elegimos qué función llamar según la operación.
-    switch (req->op) {
+    switch (peticion->operacion) {
         case OP_DESTROY:
-            res->status = destroy();
+            respuesta->estado = destroy();
             break;
 
         case OP_SET_VALUE:
-            res->status = set_value(req->key, req->value1, req->n_value2, (float *)req->v_value2, req->value3);
+            respuesta->estado = set_value(peticion->clave,
+                                          peticion->valor1,
+                                          peticion->n_value2,
+                                          (float *)peticion->vector_value2,
+                                          peticion->valor3);
             break;
 
         case OP_GET_VALUE:
-            res->status = get_value(req->key, res->value1, &res->n_value2, res->v_value2, &res->value3);
+            respuesta->estado = get_value(peticion->clave,
+                                          respuesta->valor1,
+                                          &respuesta->n_value2,
+                                          respuesta->vector_value2,
+                                          &respuesta->valor3);
             break;
 
         case OP_MODIFY_VALUE:
-            res->status = modify_value(req->key, req->value1, req->n_value2, (float *)req->v_value2, req->value3);
+            respuesta->estado = modify_value(peticion->clave,
+                                             peticion->valor1,
+                                             peticion->n_value2,
+                                             (float *)peticion->vector_value2,
+                                             peticion->valor3);
             break;
 
         case OP_DELETE_KEY:
-            res->status = delete_key(req->key);
+            respuesta->estado = delete_key(peticion->clave);
             break;
 
         case OP_EXIST:
-            res->status = exist(req->key);
+            respuesta->estado = exist(peticion->clave);
             break;
 
         default:
-            res->status = -1;
+            respuesta->estado = -1;
             break;
     }
 }
 
 // Esta función manda la respuesta al cliente.
 // Primero envía la cabecera y luego el cuerpo, si existe.
-static int send_response(int fd, uint8_t op, int status, const unsigned char *body, uint32_t body_len) {
-    unsigned char hdr[RES_HDR];    // Buffer de cabecera
-    size_t pos = 0;                // Posición actual dentro de la cabecera
+static int enviar_respuesta(int descriptor,
+                            uint8_t operacion,
+                            int estado,
+                            const unsigned char *cuerpo,
+                            uint32_t longitud_cuerpo) {
+    unsigned char cabecera[TAM_CABECERA_RESPUESTA]; // Buffer de cabecera
+    size_t posicion = 0;                            // Posición actual dentro de la cabecera
 
     // Guardamos la operación.
-    hdr[pos++] = op;
+    cabecera[posicion++] = operacion;
 
     // Guardamos el estado.
-    write_i32(hdr, &pos, (int32_t)status);
+    escribir_entero_32(cabecera, &posicion, (int32_t)estado);
 
     // Guardamos la longitud del cuerpo.
-    write_i32(hdr, &pos, (int32_t)body_len);
+    escribir_entero_32(cabecera, &posicion, (int32_t)longitud_cuerpo);
 
     // Enviamos la cabecera.
-    if (send_all(fd, hdr, sizeof(hdr)) == -1) {
+    if (enviar_todo(descriptor, cabecera, sizeof(cabecera)) == -1) {
         return -1;
     }
 
     // Si hay cuerpo, lo enviamos también.
-    if (body_len > 0 && send_all(fd, body, body_len) == -1) {
+    if (longitud_cuerpo > 0 && enviar_todo(descriptor, cuerpo, longitud_cuerpo) == -1) {
         return -1;
     }
 
@@ -496,109 +529,115 @@ static int send_response(int fd, uint8_t op, int status, const unsigned char *bo
 
 // Esta función atiende una conexión completa.
 // Lee la petición, la interpreta, ejecuta la operación y manda la respuesta.
-static void handle_client(int client_fd) {
-    unsigned char hdr[PET_HDR];    // Aquí guardamos la cabecera recibida
-    unsigned char *body = NULL;    // Aquí guardaremos el cuerpo recibido
-    unsigned char *resp_body = NULL; // Aquí guardaremos el cuerpo de la respuesta
-    uint8_t op;                    // Operación pedida
-    int32_t body_len32;            // Tamaño del cuerpo como entero con signo
-    uint32_t body_len;             // Tamaño del cuerpo ya validado
-    size_t pos = 1;                // Empezamos en 1 porque el byte 0 es la operación
-    struct request_data req;       // Petición ya interpretada
-    struct response_data res;      // Resultado de la operación
-    int status = -1;               // Estado final a devolver
-    uint32_t resp_body_len = 0;    // Tamaño del cuerpo de la respuesta
+static void atender_cliente(int descriptor_cliente) {
+    unsigned char cabecera[TAM_CABECERA_PETICION]; // Aquí guardamos la cabecera recibida
+    unsigned char *cuerpo = NULL;                  // Aquí guardaremos el cuerpo recibido
+    unsigned char *cuerpo_respuesta = NULL;        // Aquí guardaremos el cuerpo de la respuesta
+    uint8_t operacion;                             // Operación pedida
+    int32_t longitud_cuerpo_32;                    // Tamaño del cuerpo como entero con signo
+    uint32_t longitud_cuerpo;                      // Tamaño del cuerpo ya validado
+    size_t posicion = 1;                           // Empezamos en 1 porque el byte 0 es la operación
+    struct datos_peticion peticion;                // Petición ya interpretada
+    struct datos_respuesta respuesta;              // Resultado de la operación
+    int estado = -1;                               // Estado final a devolver
+    uint32_t longitud_cuerpo_respuesta = 0;        // Tamaño del cuerpo de la respuesta
 
     // Leemos la cabecera completa.
-    if (recv_all(client_fd, hdr, sizeof(hdr)) == -1) {
-        close(client_fd);
+    if (recibir_todo(descriptor_cliente, cabecera, sizeof(cabecera)) == -1) {
+        close(descriptor_cliente);
         return;
     }
 
     // El primer byte es la operación.
-    op = hdr[0];
+    operacion = cabecera[0];
 
     // Los 4 bytes siguientes son el tamaño del cuerpo.
-    body_len32 = read_i32(hdr, &pos);
+    longitud_cuerpo_32 = leer_entero_32(cabecera, &posicion);
 
     // Validamos ese tamaño.
-    if (body_len32 < 0 || body_len32 > MAX_BODY) {
-        (void)send_response(client_fd, op, -1, NULL, 0);
-        close(client_fd);
+    if (longitud_cuerpo_32 < 0 || longitud_cuerpo_32 > MAX_CUERPO) {
+        (void)enviar_respuesta(descriptor_cliente, operacion, -1, NULL, 0);
+        close(descriptor_cliente);
         return;
     }
 
     // Convertimos el tamaño a uint32_t.
-    body_len = (uint32_t)body_len32;
+    longitud_cuerpo = (uint32_t)longitud_cuerpo_32;
 
     // Si hay cuerpo, reservamos memoria para él.
-    if (body_len > 0) {
-        body = malloc(body_len);
+    if (longitud_cuerpo > 0) {
+        cuerpo = malloc(longitud_cuerpo);
 
         // Si falla malloc, respondemos con error.
-        if (body == NULL) {
-            (void)send_response(client_fd, op, -1, NULL, 0);
-            close(client_fd);
+        if (cuerpo == NULL) {
+            (void)enviar_respuesta(descriptor_cliente, operacion, -1, NULL, 0);
+            close(descriptor_cliente);
             return;
         }
 
         // Leemos el cuerpo completo.
-        if (recv_all(client_fd, body, body_len) == -1) {
-            free(body);
-            close(client_fd);
+        if (recibir_todo(descriptor_cliente, cuerpo, longitud_cuerpo) == -1) {
+            free(cuerpo);
+            close(descriptor_cliente);
             return;
         }
     }
 
     // Interpretamos el cuerpo recibido.
-    if (parse_request(op, body, body_len, &req) == -1) {
-        (void)send_response(client_fd, op, -1, NULL, 0);
-        free(body);
-        close(client_fd);
+    if (interpretar_peticion(operacion, cuerpo, longitud_cuerpo, &peticion) == -1) {
+        (void)enviar_respuesta(descriptor_cliente, operacion, -1, NULL, 0);
+        free(cuerpo);
+        close(descriptor_cliente);
         return;
     }
 
     // Ejecutamos la operación real.
-    run_request(&req, &res);
+    ejecutar_peticion(&peticion, &respuesta);
 
     // Guardamos el estado devuelto.
-    status = res.status;
+    estado = respuesta.estado;
 
     // Si era get_value y salió bien, construimos el cuerpo de respuesta.
-    if (op == OP_GET_VALUE && status == 0) {
-        if (build_get_body(&resp_body, &resp_body_len, &res) == -1) {
-            status = -1;
-            resp_body_len = 0;
+    if (operacion == OP_GET_VALUE && estado == 0) {
+        if (construir_cuerpo_get_value(&cuerpo_respuesta,
+                                       &longitud_cuerpo_respuesta,
+                                       &respuesta) == -1) {
+            estado = -1;
+            longitud_cuerpo_respuesta = 0;
         }
     }
 
     // Enviamos la respuesta.
-    (void)send_response(client_fd, op, status, resp_body, resp_body_len);
+    (void)enviar_respuesta(descriptor_cliente,
+                           operacion,
+                           estado,
+                           cuerpo_respuesta,
+                           longitud_cuerpo_respuesta);
 
     // Liberamos el cuerpo de respuesta.
-    free(resp_body);
+    free(cuerpo_respuesta);
 
     // Liberamos el cuerpo recibido.
-    free(body);
+    free(cuerpo);
 
     // Cerramos la conexión con este cliente.
-    close(client_fd);
+    close(descriptor_cliente);
 }
 
 // Esta es la función que ejecuta cada hilo.
 // Cada hilo atiende a un cliente distinto.
-static void *client_thread(void *arg) {
-    int client_fd = *(int *)arg;   // Recuperamos el socket del cliente
-    free(arg);                     // Liberamos la memoria reservada para pasarlo al hilo
-    handle_client(client_fd);      // Atendemos al cliente
-    return NULL;                   // El hilo termina aquí
+static void *hilo_cliente(void *argumento) {
+    int descriptor_cliente = *(int *)argumento; // Recuperamos el socket del cliente
+    free(argumento);                            // Liberamos la memoria reservada para pasarlo al hilo
+    atender_cliente(descriptor_cliente);        // Atendemos al cliente
+    return NULL;                                // El hilo termina aquí
 }
 
 // Función principal del servidor.
 int main(int argc, char *argv[]) {
-    struct sockaddr_in addr;       // Dirección del servidor en IPv4
-    int port;                      // Puerto leído desde argv
-    int opt = 1;                   // Valor para SO_REUSEADDR
+    struct sockaddr_in direccion; // Dirección del servidor en IPv4
+    int puerto;                   // Puerto leído desde argv
+    int reutilizar_direccion = 1; // Valor para SO_REUSEADDR
 
     // Debe haber exactamente un argumento: el puerto.
     if (argc != 2) {
@@ -607,79 +646,83 @@ int main(int argc, char *argv[]) {
     }
 
     // Convertimos el puerto de texto a entero.
-    port = atoi(argv[1]);
+    puerto = atoi(argv[1]);
 
     // Validamos que sea un puerto correcto.
-    if (port <= 0 || port > 65535) {
+    if (puerto <= 0 || puerto > 65535) {
         fprintf(stderr, "Puerto no válido.\n");
         return EXIT_FAILURE;
     }
 
-    // Si llega Ctrl+C, llamamos a stop_server.
-    signal(SIGINT, stop_server);
+    // Si llega Ctrl+C, llamamos a detener_servidor.
+    signal(SIGINT, detener_servidor);
 
-    // Si llega SIGTERM, llamamos a stop_server.
-    signal(SIGTERM, stop_server);
+    // Si llega SIGTERM, llamamos a detener_servidor.
+    signal(SIGTERM, detener_servidor);
 
     // Ignoramos SIGPIPE para que un send a un socket roto no mate el proceso.
     signal(SIGPIPE, SIG_IGN);
 
     // Creamos el socket del servidor.
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    descriptor_servidor = socket(AF_INET, SOCK_STREAM, 0);
 
     // Si falla, mostramos error y terminamos.
-    if (server_fd == -1) {
+    if (descriptor_servidor == -1) {
         perror("socket");
         return EXIT_FAILURE;
     }
 
     // Activamos SO_REUSEADDR para poder reutilizar antes el puerto.
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
+    if (setsockopt(descriptor_servidor,
+                   SOL_SOCKET,
+                   SO_REUSEADDR,
+                   &reutilizar_direccion,
+                   sizeof(reutilizar_direccion)) == -1) {
         perror("setsockopt");
-        close(server_fd);
+        close(descriptor_servidor);
         return EXIT_FAILURE;
     }
 
     // Dejamos la estructura de dirección a cero.
-    memset(&addr, 0, sizeof(addr));
+    memset(&direccion, 0, sizeof(direccion));
 
     // Indicamos que usamos IPv4.
-    addr.sin_family = AF_INET;
+    direccion.sin_family = AF_INET;
 
     // Guardamos el puerto en orden de red.
-    addr.sin_port = htons((uint16_t)port);
+    direccion.sin_port = htons((uint16_t)puerto);
 
     // Escuchamos en todas las interfaces de red.
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    direccion.sin_addr.s_addr = htonl(INADDR_ANY);
 
     // Asociamos el socket al puerto.
-    if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+    if (bind(descriptor_servidor, (struct sockaddr *)&direccion, sizeof(direccion)) == -1) {
         perror("bind");
-        close(server_fd);
+        close(descriptor_servidor);
         return EXIT_FAILURE;
     }
 
     // Ponemos el socket en modo escucha.
-    if (listen(server_fd, SOMAXCONN) == -1) {
+    if (listen(descriptor_servidor, SOMAXCONN) == -1) {
         perror("listen");
-        close(server_fd);
+        close(descriptor_servidor);
         return EXIT_FAILURE;
     }
 
     // Mostramos que el servidor ya está listo.
-    printf("Servidor TCP escuchando en el puerto %d...\n", port);
+    printf("Servidor TCP escuchando en el puerto %d...\n", puerto);
 
     // Bucle principal del servidor.
-    while (keep_running) {
-        int client_fd = accept(server_fd, NULL, NULL); // Esperamos una nueva conexión
-        pthread_t tid;                                 // ID del nuevo hilo
-        int *arg;                                      // Memoria para pasar el socket al hilo
-        int err;                                       // Código de error de pthread_create
+    while (seguir_funcionando) {
+        int descriptor_cliente = accept(descriptor_servidor, NULL, NULL); // Esperamos una nueva conexión
+        pthread_t identificador_hilo;                                     // ID del nuevo hilo
+        int *argumento_hilo;                                              // Memoria para pasar el socket al hilo
+        int error_hilo;                                                   // Código de error de pthread_create
 
         // Si accept falla...
-        if (client_fd == -1) {
+        if (descriptor_cliente == -1) {
             // ...y el servidor ya debe parar, salimos del bucle.
-            if (!keep_running) {
+            if (!seguir_funcionando) {
                 break;
             }
 
@@ -694,35 +737,35 @@ int main(int argc, char *argv[]) {
         }
 
         // Reservamos memoria para pasar el socket al hilo.
-        arg = malloc(sizeof(*arg));
+        argumento_hilo = malloc(sizeof(*argumento_hilo));
 
         // Si falla malloc, cerramos el cliente y seguimos.
-        if (arg == NULL) {
-            close(client_fd);
+        if (argumento_hilo == NULL) {
+            close(descriptor_cliente);
             continue;
         }
 
         // Guardamos el socket del cliente.
-        *arg = client_fd;
+        *argumento_hilo = descriptor_cliente;
 
         // Creamos un hilo para atender a este cliente.
-        err = pthread_create(&tid, NULL, client_thread, arg);
+        error_hilo = pthread_create(&identificador_hilo, NULL, hilo_cliente, argumento_hilo);
 
         // Si falla, limpiamos y seguimos.
-        if (err != 0) {
-            fprintf(stderr, "Error creando hilo: %s\n", strerror(err));
-            close(client_fd);
-            free(arg);
+        if (error_hilo != 0) {
+            fprintf(stderr, "Error creando hilo: %s\n", strerror(error_hilo));
+            close(descriptor_cliente);
+            free(argumento_hilo);
             continue;
         }
 
         // Dejamos el hilo detached para no tener que hacer pthread_join.
-        pthread_detach(tid);
+        pthread_detach(identificador_hilo);
     }
 
     // Si el socket servidor sigue abierto, lo cerramos.
-    if (server_fd != -1) {
-        close(server_fd);
+    if (descriptor_servidor != -1) {
+        close(descriptor_servidor);
     }
 
     // Mostramos mensaje final.
