@@ -92,10 +92,7 @@ static int enviar_todo(int descriptor, const void *buffer, size_t cantidad_bytes
     // Seguimos mientras queden bytes por enviar.
     while (bytes_enviados < cantidad_bytes) {
         // Intentamos enviar los bytes que faltan.
-        ssize_t resultado = send(descriptor,
-                                 puntero + bytes_enviados,
-                                 cantidad_bytes - bytes_enviados,
-                                 0);
+        ssize_t resultado = send(descriptor, puntero + bytes_enviados, cantidad_bytes - bytes_enviados, 0);
 
         // Si send falla...
         if (resultado < 0) {
@@ -130,10 +127,7 @@ static int recibir_todo(int descriptor, void *buffer, size_t cantidad_bytes) {
     // Seguimos mientras queden bytes por recibir.
     while (bytes_recibidos < cantidad_bytes) {
         // Intentamos recibir lo que falta.
-        ssize_t resultado = recv(descriptor,
-                                 puntero + bytes_recibidos,
-                                 cantidad_bytes - bytes_recibidos,
-                                 0);
+        ssize_t resultado = recv(descriptor, puntero + bytes_recibidos, cantidad_bytes - bytes_recibidos, 0);
 
         // Si recv falla...
         if (resultado < 0) {
@@ -236,10 +230,7 @@ static int quedan_bytes(size_t posicion, size_t necesarios, size_t total) {
 // El formato es:
 // - 4 bytes con la longitud
 // - luego los bytes de la cadena
-static int leer_cadena(const unsigned char *buffer,
-                       size_t total,
-                       size_t *posicion,
-                       char destino[MAX_TEXTO]) {
+static int leer_cadena(const unsigned char *buffer, size_t total, size_t *posicion, char destino[MAX_TEXTO]) {
     int32_t longitud_32; // Longitud leída como entero con signo
     size_t longitud;     // Longitud convertida a size_t
 
@@ -288,9 +279,7 @@ static int leer_cadena(const unsigned char *buffer,
 // - N_value2
 // - los floats
 // - x, y, z
-static int construir_cuerpo_get_value(unsigned char **cuerpo,
-                                      uint32_t *longitud_cuerpo,
-                                      const struct datos_respuesta *respuesta) {
+static int construir_cuerpo_get_value(unsigned char **cuerpo, uint32_t *longitud_cuerpo, const struct datos_respuesta *respuesta) {
     size_t longitud_valor1 = strlen(respuesta->valor1); // Longitud real de value1
     size_t total;                                       // Tamaño total del cuerpo
     unsigned char *buffer;                              // Buffer donde construiremos el cuerpo
