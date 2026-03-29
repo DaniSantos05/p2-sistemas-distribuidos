@@ -1,0 +1,9 @@
+*.o
+*.so
+
+servidor
+app-cliente_nd
+app-cliente_dist
+
+.vscode/
+.DS_Store

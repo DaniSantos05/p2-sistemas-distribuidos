@@ -434,7 +434,7 @@ static int interpretar_peticion(uint8_t operacion,
 
 // Esta función llama a las funciones reales del servicio.
 // Aquí conectamos la parte de red con claves.c.
-static void ejecutar_peticion(const struct datos_peticion *peticion,
+static void ejecutar_peticion(struct datos_peticion *peticion,
                               struct datos_respuesta *respuesta) {
     // Dejamos la estructura de respuesta limpia.
     memset(respuesta, 0, sizeof(*respuesta));
@@ -449,7 +449,7 @@ static void ejecutar_peticion(const struct datos_peticion *peticion,
             respuesta->estado = set_value(peticion->clave,
                                           peticion->valor1,
                                           peticion->n_value2,
-                                          (float *)peticion->vector_value2,
+                                          peticion->vector_value2,
                                           peticion->valor3);
             break;
 
@@ -465,7 +465,7 @@ static void ejecutar_peticion(const struct datos_peticion *peticion,
             respuesta->estado = modify_value(peticion->clave,
                                              peticion->valor1,
                                              peticion->n_value2,
-                                             (float *)peticion->vector_value2,
+                                             peticion->vector_value2,
                                              peticion->valor3);
             break;
 
