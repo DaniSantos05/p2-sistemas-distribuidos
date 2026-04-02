@@ -1,9 +1,17 @@
-*.o
-*.so
-
-servidor
+# Ejecutables finales
 app-cliente_nd
 app-cliente_dist
+benchmark-get_nd
+benchmark-get_dist
 
-.vscode/
+# Objetos de compilación
+*.o
+src/*.o
+
+# Librerías dinámicas
+*.so
+
+# Archivos de sistema o de editores
 .DS_Store
+.vscode/
+*.swp
