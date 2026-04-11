@@ -575,7 +575,7 @@ static void atender_cliente(int descriptor_cliente) {
         if (interpretar_peticion(operacion, cuerpo, longitud_cuerpo, &peticion) == -1) {
             (void)enviar_respuesta(descriptor_cliente, operacion, -1, NULL, 0);
             free(cuerpo);
-            break;
+            continue;
         }
 
         // Ejecutamos la operación real

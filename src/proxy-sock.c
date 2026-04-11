@@ -210,8 +210,9 @@ int set_value(char *key, char *value1, int N_value2, float *V_value2, struct Paq
         }
     }
 
-    if (key == NULL || value1 == NULL || V_value2 == NULL ||
-        N_value2 < 1 || N_value2 > MAX_VALUE2) {
+    if (key == NULL || strlen(key) >= MAX_TEXTO || 
+        value1 == NULL || strlen(value1) >= MAX_TEXTO || 
+        V_value2 == NULL || N_value2 < 1 || N_value2 > MAX_VALUE2) {
         return -1;
     }
 
@@ -290,7 +291,7 @@ int get_value(char *key, char *value1, int *N_value2, float *V_value2, struct Pa
         }
     }
 
-    if (key == NULL || value1 == NULL || N_value2 == NULL || V_value2 == NULL || value3 == NULL) {
+    if (key == NULL || strlen(key) >= MAX_TEXTO || value1 == NULL || N_value2 == NULL || V_value2 == NULL || value3 == NULL) {
         return -1;
     }
 
@@ -391,8 +392,9 @@ int modify_value(char *key, char *value1, int N_value2, float *V_value2, struct 
         }
     }
 
-    if (key == NULL || value1 == NULL || V_value2 == NULL ||
-        N_value2 < 1 || N_value2 > MAX_VALUE2) {
+    if (key == NULL || strlen(key) >= MAX_TEXTO || 
+        value1 == NULL || strlen(value1) >= MAX_TEXTO || 
+        V_value2 == NULL || N_value2 < 1 || N_value2 > MAX_VALUE2) {
         return -1;
     }
 
@@ -464,7 +466,7 @@ int delete_key(char *key) {
         }
     }
 
-    if (key == NULL) {
+    if (key == NULL || strlen(key) >= MAX_TEXTO) {
         return -1;
     }
 
@@ -521,7 +523,7 @@ int exist(char *key) {
         }
     }
 
-    if (key == NULL) {
+    if (key == NULL || strlen(key) >= MAX_TEXTO) {
         return -1;
     }
 
