@@ -1,62 +1,59 @@
 CC = gcc
-THREAD_FLAGS = -pthread
-CFLAGS = -Wall -Werror -fPIC -Isrc $(THREAD_FLAGS)
+CFLAGS = -Wall -Werror -fPIC -pthread -Isrc
 LDFLAGS = -L. -Wl,-rpath,.
-LDLIBS = $(THREAD_FLAGS)
+LDLIBS = -pthread
 
-# Directorio fuente
 SRCDIR = src
 
-# Librería dinámica disponible ahora mismo
-LIB_REAL = libclaves.so
+# Librerías
+LIB_CLAVES   = libclaves.so
+LIB_PROXY    = libproxyclaves.so
 
-# Ejecutables que sí vamos a generar ahora
-EXE_MONO = app-cliente_nd
+# Ejecutables
 EXE_SERVER = servidor
+EXE_CLIENT = cliente
+EXE_CLIENT2 = cliente2
 
-# Regla principal
-all: $(EXE_MONO) $(EXE_SERVER)
+all: $(LIB_CLAVES) $(LIB_PROXY) $(EXE_SERVER) $(EXE_CLIENT) $(EXE_CLIENT2)
 
-# ==================================================
-# 1. LIBRERÍA DINÁMICA
-# ==================================================
-
-$(LIB_REAL): $(SRCDIR)/claves.o
+# ── Librería del servidor (claves.c) ─────────────────────────────────────────
+$(LIB_CLAVES): $(SRCDIR)/claves.o
 	$(CC) -shared -o $@ $^
-
-# ==================================================
-# 2. OBJETOS
-# ==================================================
 
 $(SRCDIR)/claves.o: $(SRCDIR)/claves.c $(SRCDIR)/claves.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(SRCDIR)/app-cliente.o: $(SRCDIR)/app-cliente.c $(SRCDIR)/claves.h
+# ── Librería del proxy (proxy-sock.c) ────────────────────────────────────────
+$(LIB_PROXY): $(SRCDIR)/proxy-sock.o
+	$(CC) -shared -o $@ $^
+
+$(SRCDIR)/proxy-sock.o: $(SRCDIR)/proxy-sock.c $(SRCDIR)/claves.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# ── Servidor TCP ─────────────────────────────────────────────────────────────
 $(SRCDIR)/servidor-sock.o: $(SRCDIR)/servidor-sock.c $(SRCDIR)/claves.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# ==================================================
-# 3. EJECUTABLES
-# ==================================================
-
-# Cliente no distribuido
-$(EXE_MONO): $(SRCDIR)/app-cliente.o $(LIB_REAL)
-	$(CC) $(LDFLAGS) -o $@ $(SRCDIR)/app-cliente.o -lclaves $(LDLIBS)
-
-# Servidor TCP
-$(EXE_SERVER): $(SRCDIR)/servidor-sock.o $(LIB_REAL)
+$(EXE_SERVER): $(SRCDIR)/servidor-sock.o $(LIB_CLAVES)
 	$(CC) $(LDFLAGS) -o $@ $(SRCDIR)/servidor-sock.o -lclaves $(LDLIBS)
 
-# ==================================================
-# 4. LIMPIEZA
-# ==================================================
+# ── Cliente TCP ──────────────────────────────────────────────────────────────
+$(SRCDIR)/app-cliente.o: $(SRCDIR)/app-cliente.c $(SRCDIR)/claves.h
+	$(CC) $(CFLAGS) -c $< -o $@
 
+$(EXE_CLIENT): $(SRCDIR)/app-cliente.o $(LIB_PROXY)
+	$(CC) $(LDFLAGS) -o $@ $(SRCDIR)/app-cliente.o -lproxyclaves $(LDLIBS)
+
+# ── Cliente TCP 2 (Prueba de concurrencia) ──────────────────────────────────
+$(SRCDIR)/app-cliente-2.o: $(SRCDIR)/app-cliente-2.c $(SRCDIR)/claves.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(EXE_CLIENT2): $(SRCDIR)/app-cliente-2.o $(LIB_PROXY)
+	$(CC) $(LDFLAGS) -o $@ $(SRCDIR)/app-cliente-2.o -lproxyclaves $(LDLIBS)
+
+# ── Limpieza ──────────────────────────────────────────────────────────────────
 clean:
-	rm -f $(SRCDIR)/*.o
-	rm -f *.so
-	rm -f $(EXE_MONO) $(EXE_SERVER)
-	@echo "Limpieza completada: objetos, librerías y ejecutables borrados."
+	rm -f $(SRCDIR)/*.o *.so $(EXE_SERVER) $(EXE_CLIENT) $(EXE_CLIENT2)
+	@echo "Limpieza completada"
 
 .PHONY: all clean
