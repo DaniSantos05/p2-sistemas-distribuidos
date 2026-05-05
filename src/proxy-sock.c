@@ -141,10 +141,13 @@ static int conectar(void) {
         return -1;
     }
 
+    // Rellenamos la estructura con ip, puerto y ipv4
+    // Copiamos la IP al campo de dirección de la estructura
     memcpy(&(server_addr.sin_addr), hp->h_addr, hp->h_length);
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(puerto);
 
+    // Intentamos conectar al servidor
     if (connect(sd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
         printf("Error en connect\n");
         close(sd);
@@ -157,11 +160,14 @@ static int conectar(void) {
 
 // destroy
 int destroy(void) {
+    // Mensaje a enviar: [OP_DESTROY] [longitud=0]
     unsigned char cabecera[5];
+    // Respuesta esperada: [OP] [estado] [longitud=0]
     unsigned char respuesta[9];
     size_t pos = 0;
     int32_t estado;
 
+    // Si no estamos conectados, intentamos conectar
     if (sd == -1) {
         if (conectar() == -1) {
             return -1;
@@ -195,7 +201,7 @@ int destroy(void) {
 
 // set_value
 int set_value(char *key, char *value1, int N_value2, float *V_value2, struct Paquete value3) {
-    unsigned char cuerpo[MAX_CUERPO];
+    unsigned char cuerpo[MAX_CUERPO]; // Aquí construiremos el cuerpo de la petición
     unsigned char cabecera[5];
     unsigned char respuesta[9];
     size_t pos_cuerpo = 0;

@@ -626,7 +626,7 @@ static void *hilo_cliente(void *argumento) {
 int main(int argc, char *argv[]) {
     struct sockaddr_in direccion; // Dirección del servidor en IPv4
     int puerto;                   // Puerto leído desde argv
-    int reutilizar_direccion = 1; // Valor para SO_REUSEADDR
+    int reutilizar_direccion = 1; // Valor para SO_REUSEADDR, reutilizar el puerto aunque se apague el servidor sin cerrar el socket
 
     // Debe haber exactamente un argumento: el puerto
     if (argc != 2) {
@@ -692,7 +692,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Ponemos el socket en modo escucha
-    if (listen(descriptor_servidor, SOMAXCONN) == -1) {
+    if (listen(descriptor_servidor, SOMAXCONN) == -1) { // Cuantas conexiones máximas en cola, usamos el máximo permitido por el sistema
         perror("listen");
         close(descriptor_servidor);
         return EXIT_FAILURE;
@@ -703,7 +703,7 @@ int main(int argc, char *argv[]) {
 
     // Bucle principal del servidor
     while (seguir_funcionando) {
-        int descriptor_cliente = accept(descriptor_servidor, NULL, NULL); // Esperamos una nueva conexión
+        int descriptor_cliente = accept(descriptor_servidor, NULL, NULL); // Esperamos una nueva conexión, se bloquea hasta que llegue un cliente
         pthread_t identificador_hilo;                                     // ID del nuevo hilo
         int *argumento_hilo;                                              // Memoria para pasar el socket al hilo
         int error_hilo;                                                   // Código de error de pthread_create
